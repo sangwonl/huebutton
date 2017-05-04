@@ -4,10 +4,11 @@
   "description": "",
   "main": "huebtn.js",
   "dependencies": {
+    "aws-sdk": "^2.48.0",
     "dateformat": "^2.0.0",
     "google-spreadsheet": "^2.0.3",
-    "node-dash-button": "^0.6.1",
-    "node-hue-api": "^2.4.1"
+    "node-hue-api": "^2.4.1",
+    "sqs-consumer": "^3.6.0"
   },
   "devDependencies": {},
   "scripts": {

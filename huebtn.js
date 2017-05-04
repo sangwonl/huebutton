@@ -1,43 +1,83 @@
-var DashButton = require("node-dash-button");
-var hue = require("node-hue-api");
+// AWS for SQS
+const SQSConsumer = require("sqs-consumer");
+const AWS = require("aws-sdk");
 
-var GoogleSpreadsheet = require('google-spreadsheet');
-var creds = require('./client_secret.json');
+AWS.config.update({
+  region: "ap-northeast-2",
+  accessKeyId: "<aws-access-key>",
+  secretAccessKey: "<aws-secret-key>"
+});
 
-var dateFormat = require('dateformat');
+// Hue Bridge
+const hue = require("node-hue-api");
+const hostname = "<hue-bridge-ip>";
+const username = "<hue-bridge-api-username>";
+const api = new hue.HueApi(hostname, username);
 
-var HueApi = hue.HueApi;
-var lightState = hue.lightState;
+// Google Sheet
+const GoogleSpreadsheet = require("google-spreadsheet");
+const creds = require("./client_secret.json");
+const doc = new GoogleSpreadsheet('<credential-private-key-id>');
+const creds_json = { client_email: creds.client_email, private_key: creds.private_key };
 
-var hostname = "<hue-bridge-ip>";
-var username = "<hue-bridge-api-username>";
-
-var api = new HueApi(hostname, username);
-var state = lightState.create();
-
-var doc = new GoogleSpreadsheet('<credential-private-key-id>');
+// Misc.
+const dateFormat = require("dateformat");
 
 var logToSheet = function(action) {
     doc.useServiceAccountAuth(creds, function () {
         doc.getInfo(function(err, info) {
-            var now = dateFormat(new Date(), 'yyyy-mm-dd hh:MM:ss');
+            var now = dateFormat(new Date(), "yyyy-mm-dd hh:MM:ss");
             var sheet = info.worksheets[0];
-            sheet.addRow({ seq: sheet.rowCount, time: now, action: action })
+            sheet.addRow({ seq: sheet.rowCount, time: now, action: action });
+            console.log("[HUEBTN] Logging to Google spreadsheet.");
         });
     });
 };
 
-var dash = DashButton("<aws-iot-button-mac-address>", null, null, 'all');
-dash.on("detected", function() {
-    var lightId = 3;
-    api.lightStatus(lightId)
-    .then(function(status) {
-        var newStatus = status.state.on ? state.off() : state.on();
-        api.setLightState(lightId, newStatus)
-        .then(function(result) {
-            logToSheet(newStatus._values.on ? 'ON' : 'OFF');
-        })
-        .fail(function(error) { console.log(error); })
-        .done();
-    }).done();
+const CLICK_SINGLE = "SINGLE";
+const CLICK_DOUBLE = "DOUBLE";
+const CLICK_LONG = "LONG";
+
+const app = SQSConsumer.create({
+    queueUrl: "https://sqs.ap-northeast-2.amazonaws.com/<generated-id>/<queue-name>",
+    handleMessage: (message, done) => {
+        const msgJson = JSON.parse(message.Body);
+        const clickType = msgJson.clickType;
+        console.log("[HUEBTN] AWS button clicked: " + clickType);
+
+        var lightId = 3;
+        api.lightStatus(lightId).then(function(status) {
+            var action = "UNKNOWN";
+            var newState = hue.lightState.create();
+            if (clickType == CLICK_LONG) {
+                action = "OFF";
+                newState = newState.off();   
+            } else {
+                newState = newState.on();   
+                if (clickType == CLICK_SINGLE) {
+                    action = "ON (WARM)";
+                    newState = newState.white(500, 100);
+                } else {
+                    action = "ON (WHITE)";
+                    newState = newState.white(200, 100); 
+                }
+            }
+
+            api.setLightState(lightId, newState).then(function(result) {
+                console.log(`[HUEBTN] Light is turned ${action}.`);
+                logToSheet(action);
+            })
+            .fail(function(error) { console.log(error); })
+            .done();
+        }).done();
+
+        done();
+    },
+    sqs: new AWS.SQS()
 });
+
+app.on("error", (err) => {
+    console.log(err.message);
+});
+
+app.start();
